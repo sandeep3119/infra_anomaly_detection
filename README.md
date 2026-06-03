@@ -37,7 +37,7 @@ Canary Deployment (K8s traffic split, automated rollback)
 
 ## Dataset
 
-Synthetic PowerFlex telemetry — 10,000 rows at 1-minute intervals (~7 days). Features include:
+Synthetic Storage Array telemetry — 10,000 rows at 1-minute intervals (~7 days). Features include:
 
 | Feature | Description |
 |---|---|
