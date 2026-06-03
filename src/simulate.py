@@ -30,7 +30,7 @@ def generate_normal_data(n_rows, seed):
     return df
 
 
-def inject_disk_degradation(df, used_indices):
+def inject_disk_degradation(df, used_indices, n):
     """
     Inject disk degradation anomaly: gradual IOPS decline over 500 rows.
     Label = 1
@@ -38,109 +38,131 @@ def inject_disk_degradation(df, used_indices):
     df = df.copy()
     n_rows = len(df)
     window_size = 500
+    max_retries = 1000
     
     # Pick random start position, ensuring window fits within dataframe
-    start_idx = 0
-    end_idx = 0
-    window_len = 0
-    while True:
-            start_idx = np.random.randint(0, max(1, n_rows - window_size))
-            end_idx = min(start_idx + window_size, n_rows)
-            if np.all(used_indices[start_idx:end_idx] == 0):
-                used_indices[start_idx:end_idx] = 1
-                break
+    for _ in range(n):  # Try up to n times to find a non-overlapping window
+        start_idx = 0
+        end_idx = 0
+        window_len = 0
+        retries = 0
+        while True:
+                if retries >= max_retries:
+                    raise ValueError("Unable to find non-overlapping window for disk degradation after many retries.")
+                start_idx = np.random.randint(0, max(1, n_rows - window_size))
+                end_idx = min(start_idx + window_size, n_rows)
+                if np.all(used_indices[start_idx:end_idx] == 0):
+                    used_indices[start_idx:end_idx] = 1
+                    break
+                retries += 1
 
-    # Create gradual decline factor (0.2 to 1.0, decreasing over window)
-    window_len = end_idx - start_idx
-    decline = np.linspace(1.0, 0.2, window_len)
-    
-    # Apply degradation to IOPS
-    df.loc[start_idx:end_idx-1, 'userDataReadIops'] *= decline
-    df.loc[start_idx:end_idx-1, 'userDataWriteIops'] *= decline
-    df.loc[start_idx:end_idx-1, 'label'] = 1
+        # Create gradual decline factor (0.2 to 1.0, decreasing over window)
+        window_len = end_idx - start_idx
+        decline = np.linspace(1.0, 0.2, window_len)
+        
+        # Apply degradation to IOPS
+        df.loc[start_idx:end_idx-1, 'userDataReadIops'] *= decline
+        df.loc[start_idx:end_idx-1, 'userDataWriteIops'] *= decline
+        df.loc[start_idx:end_idx-1, 'label'] = 1
     
     return df,used_indices
 
 
-def inject_io_error_burst(df,used_indices):
+def inject_io_error_burst(df, used_indices, n):
     """
     Inject IO error burst anomaly: sudden spike in write errors.
     Label = 2
     """
     df = df.copy()
     n_rows = len(df)
-    window_size = np.random.randint(100, 201)  # Random window 100-200 rows
-    
-    # Pick random start position
-    start_idx = 0
-    end_idx = 0
-    
-    while True:
+    max_retries = 1000
+
+    for _ in range(n):  # Try up to n times to find a non-overlapping window
+        start_idx = 0
+        end_idx = 0
+        window_size = np.random.randint(100, 201)  # Random window 100-200 rows
+        retries = 0
+        while True:
+            if retries >= max_retries:
+                raise ValueError("Unable to find non-overlapping window for IO error burst after many retries.")
             start_idx = np.random.randint(0, max(1, n_rows - window_size))
             end_idx = min(start_idx + window_size, n_rows)
             if np.all(used_indices[start_idx:end_idx] == 0):
                 used_indices[start_idx:end_idx] = 2
                 break
-    
-    # Spike in write IOPS (errors manifested as high write activity)
-    df.loc[start_idx:end_idx-1, 'userDataWriteIops'] *= 3.0
-    df.loc[start_idx:end_idx-1, 'writeLatencyMs'] *= 5.0
-    df.loc[start_idx:end_idx-1, 'label'] = 2
+            retries += 1
+
+        # Spike in write IOPS (errors manifested as high write activity)
+        df.loc[start_idx:end_idx-1, 'userDataWriteIops'] *= 3.0
+        df.loc[start_idx:end_idx-1, 'writeLatencyMs'] *= 5.0
+        df.loc[start_idx:end_idx-1, 'label'] = 2
     
     return df,used_indices
 
 
-def inject_latency_spike(df,used_indices):
+def inject_latency_spike(df, used_indices, n):
     """
     Inject latency spike anomaly: sudden jump in read/write latency.
     Label = 3
     """
     df = df.copy()
     n_rows = len(df)
-    window_size = np.random.randint(100, 201)  # Random window 100-200 rows
+    max_retries = 1000
     
     # Pick random start position
-    start_idx = 0
-    end_idx = 0
-    while True:
+
+    for _ in range(n):  # Try up to n times to find non-overlapping window
+        window_size = np.random.randint(100, 201)  # Random window 100-200 rows
+        start_idx = 0
+        end_idx = 0
+        retries = 0
+        while True:
+            if retries >= max_retries:
+                raise ValueError("Unable to find non-overlapping window for latency spike after many retries.")
             start_idx = np.random.randint(0, max(1, n_rows - window_size))
             end_idx = min(start_idx + window_size, n_rows)
             if np.all(used_indices[start_idx:end_idx] == 0):
                 used_indices[start_idx:end_idx] = 3
                 break
-    
-    # Spike in latency
-    df.loc[start_idx:end_idx-1, 'readLatencyMs'] += np.random.normal(10, 2, end_idx - start_idx)
-    df.loc[start_idx:end_idx-1, 'writeLatencyMs'] += np.random.normal(15, 2, end_idx - start_idx)
-    df.loc[start_idx:end_idx-1, 'label'] = 3
+            retries += 1
+        
+        # Spike in latency
+        df.loc[start_idx:end_idx-1, 'readLatencyMs'] += np.random.normal(10, 2, end_idx - start_idx)
+        df.loc[start_idx:end_idx-1, 'writeLatencyMs'] += np.random.normal(15, 2, end_idx - start_idx)
+        df.loc[start_idx:end_idx-1, 'label'] = 3
     
     return df, used_indices
 
 
-def inject_node_failure(df, used_indices):
+def inject_node_failure(df, used_indices, n):
     """
     Inject node failure anomaly: metrics drop to near-zero.
     Label = 4
     """
     df = df.copy()
     n_rows = len(df)
-    window_size = np.random.randint(100, 201)  # Random window 100-200 rows
-    
-    # Pick random start position
-    start_idx = 0
-    end_idx = 0
-    while True:
+    max_retries = 1000
+
+    for _ in range(n):  # Try up to n times to find a non-overlapping window
+        start_idx = 0
+        end_idx = 0
+        window_size = np.random.randint(100, 201)  # Random window 100-200 rows
+        retries = 0
+        while True:
+            if retries >= max_retries:
+                raise ValueError("Unable to find non-overlapping window for node failure after many retries.")
             start_idx = np.random.randint(0, max(1, n_rows - window_size))
             end_idx = min(start_idx + window_size, n_rows)
             if np.all(used_indices[start_idx:end_idx] == 0):
                 used_indices[start_idx:end_idx] = 4
                 break
+            retries += 1
+        
+        # Drop metrics to near-zero
+        df.loc[start_idx:end_idx-1, 'userDataReadIops'] = np.random.uniform(0, 50, end_idx - start_idx)
+        df.loc[start_idx:end_idx-1, 'userDataWriteIops'] = np.random.uniform(0, 50, end_idx - start_idx)
+        df.loc[start_idx:end_idx-1, 'cpuPercent'] = np.random.uniform(0, 5, end_idx - start_idx)
+        df.loc[start_idx:end_idx-1, 'memoryPercent'] = np.random.uniform(0, 5, end_idx - start_idx)
+        df.loc[start_idx:end_idx-1, 'label'] = 4
     
-    # Drop metrics to near-zero
-    df.loc[start_idx:end_idx-1, 'userDataReadIops'] = np.random.uniform(0, 50, end_idx - start_idx)
-    df.loc[start_idx:end_idx-1, 'userDataWriteIops'] = np.random.uniform(0, 50, end_idx - start_idx)
-    df.loc[start_idx:end_idx-1, 'cpuPercent'] = np.random.uniform(0, 5, end_idx - start_idx)
-    df.loc[start_idx:end_idx-1, 'memoryPercent'] = np.random.uniform(0, 5, end_idx - start_idx)
-    df.loc[start_idx:end_idx-1, 'label'] = 4
-    
-    return df,used_indices
+    return df, used_indices
