@@ -96,7 +96,7 @@ TSD/
 | Ticket | Status | Description |
 |---|---|---|
 | TSD-001 | ✅ Done | Data simulation, feature engineering, EDA |
-| TSD-002 | ⏳ Pending | Model training — XGBoost + IsolationForest, MLflow tracking |
+| TSD-002 | ✅ Done | XGBoost (multi:softprob, 5-class, sample_weight balanced) + IsolationForest. Both tracked in MLflow with params, metrics, classification report. Registered with `champion` alias in MLflow model registry. |
 | TSD-003 | ⏳ Pending | ONNX export, quantization, inference benchmarking |
 | TSD-004 | ⏳ Pending | FastAPI inference service with ONNX Runtime |
 | TSD-005 | ⏳ Pending | MLflow model registry, champion/challenger, hot-reload |
