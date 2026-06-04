@@ -9,3 +9,7 @@ __pycache__/
 .vscode/
 *.log
 /data
+.ipynb_checkpoints
+mlartifacts/
+mlflow.db
+mlflow.log
