@@ -6,3 +6,6 @@ seaborn
 jupyter
 mlflow
 xgboost
+onnx
+onnxmltools
+onnxruntime
