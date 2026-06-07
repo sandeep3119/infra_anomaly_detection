@@ -1,3 +1,8 @@
-pydantic
-pydantinc-settings
-mlflow
+onnx==1.21.0
+numpy==2.2.6
+fastapi==0.136.3
+uvicorn==0.48.0
+onnxruntime==1.23.2
+pydantic==2.13.4
+pydantic-settings==2.14.1
+mlflow-skinny==3.13.0
