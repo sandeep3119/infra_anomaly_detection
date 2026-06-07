@@ -4,8 +4,13 @@ scikit-learn
 matplotlib
 seaborn
 jupyter
-mlflow
 xgboost
 onnx
 onnxmltools
-onnxruntime
+fastapi==0.136.3
+uvicorn==0.136.3
+onnxruntime==1.23.2
+pydantic==2.13.4
+pydantic-settings==2.14.1
+numpy==2.2.6
+mlflow==3.13.0

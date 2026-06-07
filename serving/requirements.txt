@@ -1,0 +1,3 @@
+pydantic
+pydantinc-settings
+mlflow

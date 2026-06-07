@@ -74,11 +74,22 @@ XGBoost operates on single rows — temporal context must be engineered explicit
 ```
 TSD/
 ├── data/
-│   └── simulated_data.csv       # Generated telemetry dataset
+│   └── simulated_data.csv           # Generated telemetry dataset
+├── models/
+│   ├── xgboost_tsd_model.onnx       # Exported ONNX model
+│   └── xgboost_tsd_model_quantized.onnx  # Quantized ONNX model
 ├── notebooks/
-│   └── TSD_001_data_simulation.ipynb   # Simulation, feature engineering, EDA
+│   └── TSD_001_data_simulation.ipynb     # Simulation, feature engineering, EDA
+├── serving/
+│   └── app/
+│       ├── main.py          # FastAPI app, lifespan, /predict, /predict/batch
+│       ├── inference.py     # ONNXInferenceEngine Singleton
+│       ├── schema.py        # InferenceRequest (18 fields), InferenceResponse
+│       ├── health_check.py  # /health/live, /health/ready
+│       ├── config.py        # Pydantic BaseSettings, reads .env
+│       └── logger.py        # JSON structured logging
 ├── src/
-│   └── simulate.py              # Reusable simulation module
+│   └── simulate.py          # Reusable simulation module
 └── requirements.txt
 ```
 
@@ -87,7 +98,7 @@ TSD/
 - **Data:** pandas, numpy
 - **ML:** scikit-learn, XGBoost, ONNX Runtime
 - **Experiment tracking:** MLflow
-- **Serving:** FastAPI
+- **Serving:** FastAPI, ONNX Runtime, uvicorn
 - **Monitoring:** Prometheus, Grafana
 - **Infra:** Kubernetes, Docker
 
@@ -98,7 +109,7 @@ TSD/
 | TSD-001 | ✅ Done | Data simulation, feature engineering, EDA |
 | TSD-002 | ✅ Done | XGBoost (multi:softprob, 5-class, sample_weight balanced) + IsolationForest. Both tracked in MLflow with params, metrics, classification report. Registered with `champion` alias in MLflow model registry. |
 | TSD-003 | ✅ Done | XGBoost exported to ONNX via onnxmltools. Benchmark: native XGBoost 2x faster than ONNX Runtime (expected for tree ensembles — no operator fusion). Dynamic int8 quantization applied — no size reduction (tree models have no weight matrices). ONNX value: portability + single runtime dependency in serving container. |
-| TSD-004 | ⏳ Pending | FastAPI inference service with ONNX Runtime |
+| TSD-004 | ✅ Done | FastAPI inference service — ONNX Runtime serving, Singleton model loader (double-checked locking), `/predict` (single) + `/predict/batch`, `/health/live` + `/health/ready`, structured JSON logging. Client sends all 18 features (6 raw + 12 rolling). Inference latency ~18ms. Known limitation: rolling features computed client-side — per-device server-side buffer deferred to TSD-004b (requires Redis, absorbed into TSD-006). |
 | TSD-005 | ⏳ Pending | MLflow model registry, champion/challenger, hot-reload |
 | TSD-006 | ⏳ Pending | Prometheus + Grafana monitoring |
 | TSD-007 | ⏳ Pending | Drift detection + automated retraining trigger |
