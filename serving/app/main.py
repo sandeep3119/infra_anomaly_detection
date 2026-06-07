@@ -11,6 +11,9 @@ import uuid
 from .inference import ONNXInferenceEngine
 from .health_check import router as HealthCheckRouter
 import os
+import threading
+import mlflow
+
 
 
 logger = setup_logger("infa_anomaly_detection", settings.log_level)
@@ -23,21 +26,60 @@ label_map = {
             4 : "node_failure"
         }
 
+def load_model(app):
+    logger.info(f"Download Model initiated ....")
+    model_path = mlflow.artifacts.download_artifacts(
+            f"models:/{settings.model_registry_name}@{settings.model_alias}"
+    )
+    version_info = app.state.mlflow_client.get_model_version_by_alias(settings.model_registry_name, settings.model_alias)
+    model_file = [f for f in os.listdir(model_path) if f.endswith(".onnx")][0]
+    model = ONNXInferenceEngine(model_path=os.path.join(model_path,model_file))
+    app.state.model = model
+    app.state.model_version = int(version_info.version)
+    logger.info(f"Model Loaded Successfully.", extra={"model_version":app.state.model_version})
+    return model
 
+def poll_model(app,interval): 
+    while True:
+        try:
 
-def load_model(model_path):
-    full_path = os.path.join(model_path,settings.model_name)
-    logger.info(f"Load Model initiated ....",extra={"model_dir":full_path})
-    inference_engine_obj = ONNXInferenceEngine.get_instance(model_path=full_path)
-    logger.info(f"Model Loaded Successfully.")
-    return inference_engine_obj
+            time.sleep(interval)
+            version_info = app.state.mlflow_client.get_model_version_by_alias(settings.model_registry_name, settings.model_alias)
+            new_version = int(version_info.version)
+            if new_version > app.state.model_version:
+                logger.info(f"New champion model found, updating the current model")
+                new_model_path = mlflow.artifacts.download_artifacts(
+                    f"models:/{settings.model_registry_name}@{settings.model_alias}"
+                )
+                model_file = [f for f in os.listdir(new_model_path) if f.endswith(".onnx")][0]
+                new_model = ONNXInferenceEngine(os.path.join(new_model_path,model_file))
+                with app.state.model_lock:
+                    app.state.previous_model = app.state.model  # keep old one
+                    app.state.previous_version = app.state.model_version
+                    app.state.model = new_model
+                    app.state.model_version = new_version
+            else:
+                logger.info(f"No new champion model found.. Will poll again in next {interval} secs")
+        except Exception as e:
+            logger.error(f"Error occured while polling the model : {e}")
+   
+
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor() as pool:
-        result = await loop.run_in_executor(pool, load_model,settings.local_model_dir)
-        app.state.model = result
+        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        app.state.mlflow_client = mlflow.tracking.MlflowClient()
+        model = await loop.run_in_executor(pool, load_model,app)
+        app.state.model_lock = threading.Lock()
+
+    poll_thread = threading.Thread(
+        target=poll_model,
+        args = (app,settings.poll_interval_secs),
+        daemon=True
+    )
+    poll_thread.start()
     yield
     app.state.model = None
 
@@ -79,7 +121,8 @@ async def predict(request:InferenceRequest) -> InferenceResponse:
         request.write_latency_rolling_std_5m,
         request.write_latency_pct_change_1h
         ]],dtype=np.float32)
-    predicted_class,confidence,all_probs = app.state.model.predict(input)
+    with app.state.model_lock:
+        predicted_class,confidence,all_probs = app.state.model.predict(input)
     end_time = time.perf_counter()
     latency_ms= round(((end_time - start_time) * 1000),4)
     inference_obj = InferenceResponse(
