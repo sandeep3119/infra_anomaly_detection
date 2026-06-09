@@ -6,3 +6,5 @@ onnxruntime==1.23.2
 pydantic==2.13.4
 pydantic-settings==2.14.1
 mlflow-skinny==3.13.0
+prometheus-fastapi-instrumentator==8.0.0
+prometheus_client==0.25.0

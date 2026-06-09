@@ -81,15 +81,21 @@ TSD/
 ├── notebooks/
 │   └── TSD_001_data_simulation.ipynb     # Simulation, feature engineering, EDA
 ├── serving/
-│   └── app/
-│       ├── main.py          # FastAPI app, lifespan, /predict, /predict/batch
-│       ├── inference.py     # ONNXInferenceEngine Singleton
-│       ├── schema.py        # InferenceRequest (18 fields), InferenceResponse
-│       ├── health_check.py  # /health/live, /health/ready
-│       ├── config.py        # Pydantic BaseSettings, reads .env
-│       └── logger.py        # JSON structured logging
+│   ├── app/
+│   │   ├── main.py          # FastAPI app, lifespan, /predict, /predict/batch, metrics
+│   │   ├── inference.py     # ONNXInferenceEngine (ONNX Runtime session)
+│   │   ├── schema.py        # InferenceRequest (18 fields), InferenceResponse
+│   │   ├── health_check.py  # /health/live, /health/ready
+│   │   ├── config.py        # Pydantic BaseSettings, reads .env
+│   │   └── logger.py        # JSON structured logging
+│   ├── Dockerfile           # ONNX-Runtime serving image
+│   └── requirements.txt
+├── monitoring/
+│   ├── prometheus.yml       # Scrape config (inference:8000/metrics)
+│   └── grafana/dashboards/  # Version-controlled dashboard JSON
 ├── src/
 │   └── simulate.py          # Reusable simulation module
+├── docker-compose.yml       # mlflow + inference + prometheus + grafana
 └── requirements.txt
 ```
 
@@ -111,6 +117,7 @@ TSD/
 | TSD-003 | ✅ Done | XGBoost exported to ONNX via onnxmltools. Benchmark: native XGBoost 2x faster than ONNX Runtime (expected for tree ensembles — no operator fusion). Dynamic int8 quantization applied — no size reduction (tree models have no weight matrices). ONNX value: portability + single runtime dependency in serving container. |
 | TSD-004 | ✅ Done | FastAPI inference service — ONNX Runtime serving, Singleton model loader (double-checked locking), `/predict` (single) + `/predict/batch`, `/health/live` + `/health/ready`, structured JSON logging. Client sends all 18 features (6 raw + 12 rolling). Inference latency ~18ms. Known limitation: rolling features computed client-side — per-device server-side buffer deferred to TSD-004b (requires Redis, absorbed into TSD-006). |
 | TSD-005 | ✅ Done | MLflow registry integration + hot-reload — model loaded from registry at startup via `champion` alias (no model baked into image). Background daemon thread polls MLflow every 60s, atomically swaps `app.state.model` with `threading.Lock` on new champion version. Previous model retained in `app.state.previous_model` for rollback. ONNX artifact logged via `mlflow.onnx.log_model`. Startup time ~5s (MLflow download) vs ~80ms (local file). |
-| TSD-006 | ⏳ Pending | Prometheus + Grafana monitoring |
-| TSD-007 | ⏳ Pending | Drift detection + automated retraining trigger |
-| TSD-008 | ⏳ Pending | Canary deployment with automated rollback |
+| TSD-006 | ✅ Done | Prometheus + Grafana observability — full stack via Docker Compose (mlflow, inference, prometheus, grafana). Custom metrics: `prediction_class_total` (Counter, labelled by class), `model_version` (Gauge). Auto metrics via `prometheus-fastapi-instrumentator`: request count, latency histogram. Grafana dashboard covers all 4 golden signals — Latency (P95), Traffic (request rate), Errors (4xx/5xx rate), Saturation (resident memory) — plus prediction distribution + live model version. Dashboard JSON version-controlled in `monitoring/grafana/dashboards/`. |
+| TSD-007 | ⏳ Pending | Redis rolling buffer (promoted from TSD-004b) — per-device feature buffer, client sends 6 raw features, server computes 12 rolling features |
+| TSD-008 | ⏳ Pending | Drift detection + automated retraining trigger |
+| TSD-009 | ⏳ Pending | Canary deployment with automated rollback |

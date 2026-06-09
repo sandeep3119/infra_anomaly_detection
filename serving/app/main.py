@@ -13,6 +13,9 @@ from .health_check import router as HealthCheckRouter
 import os
 import threading
 import mlflow
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Counter, Gauge
+
 
 
 
@@ -25,7 +28,16 @@ label_map = {
             3 : "latency_spike",
             4 : "node_failure"
         }
+prediction_counter = Counter(
+    "prediction_class_total",
+    "Total predictions per anomaly class",
+    ["class_name"]  # label
+)
 
+model_version_gauge = Gauge(
+    "model_version",
+    "Currently loaded model version"
+)
 def load_model(app):
     logger.info(f"Download Model initiated ....")
     model_path = mlflow.artifacts.download_artifacts(
@@ -58,6 +70,7 @@ def poll_model(app,interval):
                     app.state.previous_version = app.state.model_version
                     app.state.model = new_model
                     app.state.model_version = new_version
+                    model_version_gauge.set(new_version)
             else:
                 logger.info(f"No new champion model found.. Will poll again in next {interval} secs")
         except Exception as e:
@@ -72,6 +85,7 @@ async def lifespan(app:FastAPI):
         mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
         app.state.mlflow_client = mlflow.tracking.MlflowClient()
         model = await loop.run_in_executor(pool, load_model,app)
+        model_version_gauge.set(app.state.model_version)
         app.state.model_lock = threading.Lock()
 
     poll_thread = threading.Thread(
@@ -92,7 +106,7 @@ app = FastAPI(
     redirect_slashes=False
 )
 
-
+Instrumentator().instrument(app=app).expose(app=app)
 
 app.include_router(HealthCheckRouter)
 
@@ -140,6 +154,7 @@ async def predict(request:InferenceRequest) -> InferenceResponse:
         "latency_ms": latency_ms
 
     })
+    prediction_counter.labels(class_name=label_map[predicted_class]).inc()
     return inference_obj
 
 @app.post("/predict/batch")
