@@ -7,10 +7,13 @@ services:
       - "8000:8000"
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - REDIS_HOST=redis
 
     depends_on:
       mlflow:
         condition: service_healthy
+      redis:
+        condition: service_started
 
   prometheus:
     image: prom/prometheus:latest
@@ -54,6 +57,14 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+  
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server
 
 volumes:
   grafana_data:

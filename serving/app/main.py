@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from .config import settings
 from .logger import setup_logger
 from contextlib import asynccontextmanager
@@ -13,8 +13,10 @@ from .health_check import router as HealthCheckRouter
 import os
 import threading
 import mlflow
+import redis
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Gauge
+from .feature_store import push_and_fetch,compute_features,_key
 
 
 
@@ -85,6 +87,7 @@ async def lifespan(app:FastAPI):
         mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
         app.state.mlflow_client = mlflow.tracking.MlflowClient()
         model = await loop.run_in_executor(pool, load_model,app)
+        app.state.redis= redis.Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
         model_version_gauge.set(app.state.model_version)
         app.state.model_lock = threading.Lock()
 
@@ -115,26 +118,18 @@ async def predict(request:InferenceRequest) -> InferenceResponse:
     logger.info("Request Recieved ...")
     start_time= time.perf_counter()
     request_id = str(uuid.uuid4())
-    input = np.array([[
-        request.userDataReadIops,
-        request.userDataWriteIops,
-        request.readLatencyMs,
-        request.writeLatencyMs,
-        request.cpuPercent,
-        request.memoryPercent,
-        request.iops_data_read_rolling_mean_5m,
-        request.iops_data_read_rolling_std_5m,
-        request.iops_data_read_pct_change_1h,
-        request.iops_data_write_rolling_mean_5m,
-        request.iops_data_write_rolling_std_5m,
-        request.iops_data_write_pct_change_1h,
-        request.read_latency_rolling_mean_5m,
-        request.read_latency_rolling_std_5m,
-        request.read_latency_pct_change_1h,
-        request.write_latency_rolling_mean_5m,
-        request.write_latency_rolling_std_5m,
-        request.write_latency_pct_change_1h
-        ]],dtype=np.float32)
+    reading =  [request.userDataReadIops,
+                request.userDataWriteIops,
+                request.readLatencyMs,
+                request.writeLatencyMs, 
+                request.cpuPercent, 
+                request.memoryPercent]
+    r = app.state.redis
+    count,rows = push_and_fetch(r,request.deviceID,reading)
+    if count < 61:
+        raise HTTPException(status_code=425,detail={"status":"warming_up reading requires 61 entries to start prediction"})
+    features = compute_features(rows)
+    input = features.to_numpy(dtype=np.float32)
     with app.state.model_lock:
         predicted_class,confidence,all_probs = app.state.model.predict(input)
     end_time = time.perf_counter()

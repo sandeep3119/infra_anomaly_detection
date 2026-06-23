@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     poll_interval_secs: int = 60
     host: str = "0.0.0.0"
     port: int = 8000
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_buffer_ttl_secs: int = 7200
     log_level: str = "INFO"
 
     class Config:
