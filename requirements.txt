@@ -14,3 +14,5 @@ onnxruntime==1.23.2
 pydantic==2.13.4
 pydantic-settings==2.14.1
 mlflow==3.13.0
+evidently==0.7.21
+prometheus_client==0.25.0

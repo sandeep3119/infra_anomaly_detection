@@ -66,5 +66,18 @@ services:
       - "6379:6379"
     command: redis-server
 
+  drift_runner:
+    build:
+      context: .
+      dockerfile: serving/Dockerfile.drift
+    depends_on:
+      - redis
+      - mlflow
+    environment:
+      - REDIS_HOST=redis
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
 volumes:
   grafana_data:

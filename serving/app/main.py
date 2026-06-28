@@ -16,7 +16,7 @@ import mlflow
 import redis
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Gauge
-from .feature_store import push_and_fetch,compute_features,_key
+from .feature_store import push_and_fetch,compute_features,_key,add_drift_samples
 
 
 
@@ -126,8 +126,14 @@ async def predict(request:InferenceRequest) -> InferenceResponse:
                 request.memoryPercent]
     r = app.state.redis
     count,rows = push_and_fetch(r,request.deviceID,reading)
+    try:
+        add_drift_samples(r,reading)
+    except Exception as e:
+        logger.warning("drift sample append failed",extra={"error": str(e)})
     if count < 61:
         raise HTTPException(status_code=425,detail={"status":"warming_up reading requires 61 entries to start prediction"})
+   
+
     features = compute_features(rows)
     input = features.to_numpy(dtype=np.float32)
     with app.state.model_lock:

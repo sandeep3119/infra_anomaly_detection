@@ -4,6 +4,8 @@ from .config import settings
 
 
 RAW_FIELDS = ["userDataReadIops","userDataWriteIops","readLatencyMs","writeLatencyMs","cpuPercent","memoryPercent"]
+DRIFT_KEY = "drift:samples"          # module-level, one source of truth (like RAW_FIELDS)
+DRIFT_MAX = 5000
 
 FEATURE_ORDER = [
     "userDataReadIops", "userDataWriteIops", "readLatencyMs", "writeLatencyMs", "cpuPercent", "memoryPercent",
@@ -53,3 +55,9 @@ def compute_features(rows):
     df["write_latency_rolling_std_5m"]=df['writeLatencyMs'].rolling(window=5).std()
     df["write_latency_pct_change_1h"]=df['writeLatencyMs'].pct_change(periods=60)
     return df[FEATURE_ORDER].tail(1)
+
+
+def add_drift_samples(r, reading):
+    reading = ",".join(str(x) for x in reading)         
+    r.rpush(DRIFT_KEY, reading)
+    r.ltrim(DRIFT_KEY, -DRIFT_MAX, -1)

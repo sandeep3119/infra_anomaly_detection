@@ -9,4 +9,5 @@ mlflow-skinny==3.13.0
 redis==8.0.0
 pandas==2.3.3
 prometheus-fastapi-instrumentator==8.0.0
+evidently==0.7.21
 prometheus_client==0.25.0
