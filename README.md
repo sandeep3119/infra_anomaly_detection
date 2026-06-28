@@ -132,6 +132,73 @@ TSD/
 - **Infra:** Docker, Kubernetes (minikube), ingress-nginx
 - **Progressive delivery:** blue-green (Service selector) + canary (ingress weighted routing)
 
+## Getting Started
+
+### Prerequisites
+- Docker + Docker Compose
+- Python 3.10 (for the traffic generator / notebooks)
+- For the Kubernetes path: `minikube` + `kubectl`
+
+### Option A — Docker Compose (local dev)
+
+Brings up the full stack: MLflow, inference, Redis, drift-runner, Prometheus, Grafana.
+
+```bash
+docker compose up --build
+```
+
+| Service | URL |
+|---|---|
+| Inference API (Swagger) | http://localhost:8000/docs |
+| MLflow | http://localhost:5000 |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 |
+
+Generate telemetry traffic (warms the per-device buffers and feeds drift detection):
+
+```bash
+pip install -r requirements.txt
+python scripts/simulate_traffic.py            # normal traffic
+python scripts/simulate_traffic.py --drift    # drifted traffic (spikes readLatencyMs)
+```
+
+The drift runner evaluates every `DRIFT_INTERVAL` (default 300s) and exposes
+`feature_drift_score` / `drift_alert` on http://localhost:8001/metrics.
+
+### Option B — Kubernetes (minikube)
+
+```bash
+minikube start --cpus=4 --memory=6144
+eval $(minikube docker-env)                    # build images into minikube's daemon
+
+docker build -f k8s/mlflow.Dockerfile     -t tsd-mlflow:latest .
+docker build -f serving/Dockerfile        -t tsd-inference:latest .
+docker build -f serving/Dockerfile.drift  -t tsd-drift:latest .
+
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/redis.yaml -f k8s/mlflow.yaml
+kubectl apply -f k8s/inference.yaml -f k8s/drift-runner.yaml
+kubectl apply -f k8s/prometheus.yaml -f k8s/grafana.yaml
+kubectl get pods -n tsd                         # wait for all Running/Ready
+```
+
+**Blue-green** (deploy green, flip the Service selector, roll back):
+
+```bash
+kubectl apply -f k8s/inference-green.yaml
+kubectl patch svc inference -n tsd -p '{"spec":{"selector":{"app":"tsd-inference","version":"green"}}}'
+kubectl patch svc inference -n tsd -p '{"spec":{"selector":{"app":"tsd-inference","version":"blue"}}}'   # rollback
+```
+
+**Canary** (weighted split via ingress-nginx; adjust the weight to progress/roll back):
+
+```bash
+minikube addons enable ingress
+kubectl apply -f k8s/ingress.yaml
+kubectl patch ingress inference-canary -n tsd --type=merge \
+  -p '{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"50"}}}'
+```
+
 ## Monitoring Dashboard
 
 Single Grafana dashboard covering the four golden signals (TSD-006) and data-drift
