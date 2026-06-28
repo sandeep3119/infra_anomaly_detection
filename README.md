@@ -6,7 +6,7 @@ A production-grade anomaly detection pipeline for infrastructure telemetry, insp
 
 A typical storage arrays emit continuous telemetry — disk IOPS, read/write latency, CPU, memory — at high frequency. Detecting anomalies in this stream early (disk degradation, I/O error bursts, latency spikes, node failures) reduces mean time to detection and prevents cascading failures.
 
-This project implements the full MLOps workflow: data simulation → feature engineering → model training → ONNX export → FastAPI inference service → drift detection → canary deployment.
+This project implements the full MLOps workflow: data simulation → feature engineering → model training → ONNX export → FastAPI inference service → server-side feature store → drift detection → Kubernetes progressive delivery.
 
 ## Architecture
 
@@ -17,22 +17,24 @@ Simulated Telemetry
 Feature Engineering (rolling statistics, pct change)
        │
        ▼
-Model Training (XGBoost + IsolationForest) ──► MLflow Registry
+Model Training (XGBoost + IsolationForest) ──► MLflow Registry (champion alias)
        │
        ▼
-ONNX Export + Quantization 
+ONNX Export + Quantization
        │
        ▼
-FastAPI Inference Service (ONNX Runtime, Singleton loader)
+FastAPI Inference Service (ONNX Runtime) ◄── registry hot-reload (champion poll)
+       │
+       ├──► Redis feature store (per-device rolling buffer, server-side features)
+       │
+       ├──► Prometheus + Grafana (golden signals, prediction distribution, drift)
        │
        ▼
-Prometheus + Grafana (request latency, prediction distribution, drift metrics)
+Drift Detection (Evidently, scheduled runner) ──► alert / human-gated retrain
        │
        ▼
-Drift Detection (PSI/KL divergence) ──► Retraining Trigger
-       │
-       ▼
-Canary Deployment (K8s traffic split, automated rollback)
+Kubernetes (minikube): blue-green (Service selector flip)
+                       + canary (ingress-nginx weighted routing)
 ```
 
 ## Dataset
@@ -74,28 +76,47 @@ XGBoost operates on single rows — temporal context must be engineered explicit
 ```
 TSD/
 ├── data/
-│   └── simulated_data.csv           # Generated telemetry dataset
+│   └── simulated_data.csv               # Generated telemetry dataset
 ├── models/
-│   ├── xgboost_tsd_model.onnx       # Exported ONNX model
-│   └── xgboost_tsd_model_quantized.onnx  # Quantized ONNX model
+│   ├── xgboost_tsd_model.onnx           # Exported ONNX model
+│   └── xgboost_tsd_model_quantized.onnx # Quantized ONNX model
 ├── notebooks/
-│   └── TSD_001_data_simulation.ipynb     # Simulation, feature engineering, EDA
+│   ├── TSD_001_data_simulation+EDA+Feature_Engineering.ipynb
+│   ├── TSD_001_CLass_Imbalance.ipynb
+│   ├── TSD_002_model_training.ipynb
+│   ├── TSD_003_onnx_export.ipynb
+│   └── TSD_009_drift_detection.ipynb    # (drift exploration; misnamed — predates TSD-008)
 ├── serving/
 │   ├── app/
-│   │   ├── main.py          # FastAPI app, lifespan, /predict, /predict/batch, metrics
-│   │   ├── inference.py     # ONNXInferenceEngine (ONNX Runtime session)
-│   │   ├── schema.py        # InferenceRequest (18 fields), InferenceResponse
-│   │   ├── health_check.py  # /health/live, /health/ready
-│   │   ├── config.py        # Pydantic BaseSettings, reads .env
-│   │   └── logger.py        # JSON structured logging
-│   ├── Dockerfile           # ONNX-Runtime serving image
+│   │   ├── main.py            # FastAPI app, lifespan, /predict, /predict/batch, metrics, registry hot-reload
+│   │   ├── inference.py       # ONNXInferenceEngine (ONNX Runtime session)
+│   │   ├── feature_store.py   # Redis per-device rolling buffer + server-side feature computation (TSD-007)
+│   │   ├── schema.py          # InferenceRequest (deviceID + 6 raw features), InferenceResponse
+│   │   ├── health_check.py    # /health/live, /health/ready
+│   │   ├── config.py          # Pydantic BaseSettings (mlflow, redis, ttl)
+│   │   └── logger.py          # JSON structured logging
+│   ├── Dockerfile             # ONNX-Runtime serving image
+│   ├── Dockerfile.drift       # Drift-runner image
 │   └── requirements.txt
 ├── monitoring/
-│   ├── prometheus.yml       # Scrape config (inference:8000/metrics)
-│   └── grafana/dashboards/  # Version-controlled dashboard JSON
+│   ├── prometheus.yml         # Scrape config (inference + drift_runner)
+│   └── grafana/dashboards/    # Version-controlled dashboard JSON
 ├── src/
-│   └── simulate.py          # Reusable simulation module
-├── docker-compose.yml       # mlflow + inference + prometheus + grafana
+│   ├── simulate.py            # Reusable simulation module
+│   ├── train.py              # Training + evaluation functions
+│   ├── drift.py              # PSI (from-scratch) + Evidently drift computation (TSD-008)
+│   └── drift_runner.py       # Scheduled drift detector — Prometheus gauges + alert
+├── scripts/
+│   └── simulate_traffic.py    # Telemetry traffic generator (normal / --drift)
+├── k8s/                       # Kubernetes manifests (TSD-009)
+│   ├── namespace.yaml
+│   ├── redis.yaml
+│   ├── mlflow.Dockerfile / mlflow.yaml   # MLflow with state baked into image
+│   ├── inference.yaml / inference-green.yaml  # blue + green deployments
+│   ├── drift-runner.yaml
+│   ├── prometheus.yaml / grafana.yaml
+│   └── ingress.yaml           # blue-green selector flip + canary weighted routing
+├── docker-compose.yml         # mlflow + inference + prometheus + grafana + redis + drift_runner
 └── requirements.txt
 ```
 
@@ -103,11 +124,13 @@ TSD/
 
 - **Data:** pandas, numpy
 - **ML:** scikit-learn, XGBoost, ONNX Runtime
-- **Experiment tracking:** MLflow
+- **Experiment tracking:** MLflow (registry, champion alias, hot-reload)
 - **Serving:** FastAPI, ONNX Runtime, uvicorn
+- **Feature store:** Redis (per-device rolling buffer)
 - **Monitoring:** Prometheus, Grafana
 - **Drift detection:** Evidently
-- **Infra:** Kubernetes, Docker
+- **Infra:** Docker, Kubernetes (minikube), ingress-nginx
+- **Progressive delivery:** blue-green (Service selector) + canary (ingress weighted routing)
 
 ## Monitoring Dashboard
 
