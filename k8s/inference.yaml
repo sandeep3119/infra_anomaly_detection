@@ -1,0 +1,63 @@
+# Inference service — BLUE deployment (the current/stable version).
+# Blue-green: both blue and green share `app: tsd-inference`, but differ in the
+# `version` label. The Service selector below pins to version: blue. The "flip"
+# to green is a one-line change to that selector (see service.yaml usage in README).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-blue
+  namespace: tsd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tsd-inference
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: tsd-inference
+        version: blue
+    spec:
+      containers:
+        - name: inference
+          image: tsd-inference:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow:5000"
+            - name: REDIS_HOST
+              value: "redis"
+            # K8s auto-injects REDIS_PORT=tcp://<ip>:6379 for the `redis` Service,
+            # which collides with the pydantic `redis_port: int` setting. Set it
+            # explicitly so our value wins over the injected service env var.
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference
+  namespace: tsd
+spec:
+  # Selector pins traffic to ONE version. Change version: blue -> green to flip.
+  selector:
+    app: tsd-inference
+    version: blue
+  ports:
+    - port: 8000
+      targetPort: 8000

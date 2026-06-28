@@ -1,0 +1,39 @@
+# Drift runner — standalone scheduled drift detector (TSD-008).
+# Decoupled from the inference pods: own deployment, own failure domain.
+# Exposes :8001 /metrics for Prometheus to scrape.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drift-runner
+  namespace: tsd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: drift-runner
+  template:
+    metadata:
+      labels:
+        app: drift-runner
+    spec:
+      containers:
+        - name: drift-runner
+          image: tsd-drift:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_HOST
+              value: "redis"
+          ports:
+            - containerPort: 8001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: drift-runner
+  namespace: tsd
+spec:
+  selector:
+    app: drift-runner
+  ports:
+    - port: 8001
+      targetPort: 8001

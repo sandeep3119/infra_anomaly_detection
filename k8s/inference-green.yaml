@@ -1,0 +1,50 @@
+# Inference service — GREEN deployment (the new/candidate version).
+# Identical to blue except `version: green`. In a real release this image would
+# be a new build; here it's the same image so the focus is the routing mechanism.
+#
+# BLUE-GREEN FLIP (instant, all traffic):
+#   kubectl patch svc inference -n tsd -p '{"spec":{"selector":{"app":"tsd-inference","version":"green"}}}'
+# ROLLBACK (flip back):
+#   kubectl patch svc inference -n tsd -p '{"spec":{"selector":{"app":"tsd-inference","version":"blue"}}}'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-green
+  namespace: tsd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tsd-inference
+      version: green
+  template:
+    metadata:
+      labels:
+        app: tsd-inference
+        version: green
+    spec:
+      containers:
+        - name: inference
+          image: tsd-inference:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow:5000"
+            - name: REDIS_HOST
+              value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15

@@ -1,0 +1,67 @@
+# Canary deployment via ingress-nginx weighted routing.
+#
+# Two Ingresses share the SAME host (tsd.local):
+#   - inference-stable  -> routes to the `inference` Service (blue, stable)
+#   - inference-canary  -> marked canary, routes canary-weight % to the
+#                          `inference-canary` Service (green, candidate)
+#
+# nginx splits traffic by EXACT WEIGHT (independent of pod counts) — the key
+# advantage over the native replica-ratio canary. Bump canary-weight 10 -> 25 ->
+# 50 -> 100 to progress the rollout; set to 0 (or delete the canary ingress) to
+# roll back. In production
+# Canary Service — selects the GREEN pods (the candidate version).
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-canary
+  namespace: tsd
+spec:
+  selector:
+    app: tsd-inference
+    version: green
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# Stable ingress — all normal traffic to blue.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: inference-stable
+  namespace: tsd
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: tsd.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: inference
+                port:
+                  number: 8000
+---
+# Canary ingress — same host, marked canary, sends `canary-weight`% to green.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: inference-canary
+  namespace: tsd
+  annotations:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "20"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: tsd.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: inference-canary
+                port:
+                  number: 8000
