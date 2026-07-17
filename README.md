@@ -6,12 +6,15 @@ A production-grade anomaly detection pipeline for infrastructure telemetry, insp
 
 A typical storage arrays emit continuous telemetry — disk IOPS, read/write latency, CPU, memory — at high frequency. Detecting anomalies in this stream early (disk degradation, I/O error bursts, latency spikes, node failures) reduces mean time to detection and prevents cascading failures.
 
-This project implements the full MLOps workflow: data simulation → feature engineering → model training → ONNX export → FastAPI inference service → server-side feature store → drift detection → Kubernetes progressive delivery.
+This project implements the full MLOps workflow: data simulation → feature engineering → model training → ONNX export → FastAPI inference service → server-side feature store → drift detection → Kubernetes progressive delivery → offline batch scoring.
 
 ## Architecture
 
+The same champion model serves **two consumers**: a latency-optimised online path and a
+throughput-optimised offline batch path.
+
 ```
-Simulated Telemetry
+Simulated Fleet Telemetry (N devices, tiered)
        │
        ▼
 Feature Engineering (rolling statistics, pct change)
@@ -22,20 +25,73 @@ Model Training (XGBoost + IsolationForest) ──► MLflow Registry (champion a
        ▼
 ONNX Export + Quantization
        │
-       ▼
-FastAPI Inference Service (ONNX Runtime) ◄── registry hot-reload (champion poll)
-       │
-       ├──► Redis feature store (per-device rolling buffer, server-side features)
-       │
+       ├─────────────────────────────────┬──────────────────────────────────┐
+       ▼                                 ▼                                  │
+  ONLINE PATH (TSD-004..009)       OFFLINE BATCH PATH (TSD-010)             │
+  latency-bound          throughput-bound, scheduled              │
+       │                                 │                                  │
+  FastAPI + ONNX Runtime           Read fleet parquet (Spark)               │
+  ◄── registry hot-reload               │                                   │
+       │                           Distributed feature engineering          │
+  Redis feature store              Window.partitionBy(device_id)            │
+  (per-device rolling buffer)      → rolling mean/std, pct_change           │
+       │                                 │                                  │
+  real-time alerting               Batch score (broadcast ONNX bytes        │
+       │                            + mapInPandas)                          │
+       │                                 │                                  │
+       │                           Fleet anomaly report (parquet)           │
+       │                                                                    │
        ├──► Prometheus + Grafana (golden signals, prediction distribution, drift)
-       │
-       ▼
+       │                                                                    │
+       ▼                                                                    │
 Drift Detection (Evidently, scheduled runner) ──► alert / human-gated retrain
-       │
-       ▼
-Kubernetes (minikube): blue-green (Service selector flip)
+       │                                                                    │
+       ▼                                                                    │
+Kubernetes (minikube): blue-green (Service selector flip)  ◄────────────────┘
                        + canary (ingress-nginx weighted routing)
 ```
+
+## Online vs Offline Batch
+
+Two independent axes run through this pipeline, both driven by the **same champion model
+resolved from the MLflow registry by alias** — so both consumers provably score with the
+same model version:
+
+| Axis | Online | Offline / batch |
+|---|---|---|
+| **Serving** | live, per-request, latency-bound (FastAPI + Redis, ~9.5 ms) | scheduled, bulk, throughput-bound (Spark) |
+| **Features** | computed per request from the Redis buffer | computed in bulk (Spark window functions) |
+
+**Why both?** The online path answers *"is this device anomalous right now?"* and is
+optimised for latency. It is the wrong tool for three jobs operations still needs:
+
+- **Different SLAs.** Lower-priority telemetry doesn't need sub-10ms alerts; scoring it on
+  a schedule is sufficient and far cheaper than keeping it in the hot path.
+- **Backfill.** The online model only scored data that arrived *after* it went live. When a
+  new champion is promoted, re-scoring history is a bulk job the one-row-at-a-time API
+  cannot do.
+- **Fleet-wide, long-horizon questions.** The Redis buffer is a *sliding window* (depth 61,
+  sliding TTL) — by design it has no long memory. *"Which devices anomalied most this
+  quarter?"* requires a durable historical store and cross-device aggregation.
+
+These are high-volume, throughput-bound, no-one-is-waiting jobs — the opposite profile from
+online serving, and exactly what batch compute is built for.
+
+**Why not just log online predictions and query them?** For data that flowed through the
+online path, you can. But a prediction log only contains what the API saw: post-launch,
+high-priority telemetry. It cannot cover history predating the service, or telemetry that
+deliberately never hits the online path. Prediction logging and batch scoring are
+**complementary** — logging captures *"what did we predict live"*, batch covers
+*"score everything else, in bulk"*.
+
+**The shared constraint — training/serving skew.** The batch path introduces a *second*
+feature-computation implementation (Spark), which is a fresh opportunity to reintroduce the
+skew TSD-007 eliminated. The batch features must be numerically identical to the training
+pandas math: same window size and boundaries, same `pct_change` lookback (`periods=60` →
+`lag(60)`), same sample-vs-population `std`, same cold-start nulling (Spark computes
+*partial* windows where pandas emits `NaN` — partial rows must be explicitly nulled), same
+column order. A pandas-vs-Spark **equivalence check** over an overlapping slice is the guard
+that proves skew hasn't crept back in.
 
 ## Dataset
 
@@ -220,3 +276,4 @@ a 0/1 drift-alert status, and the max drift score across features.
 | TSD-007 | ✅ Done | Redis per-device rolling buffer (promoted from TSD-004b) — feature computation moved server-side. Client now sends `deviceID` + 6 raw features only; server maintains a per-device history list in Redis (`device:{id}` key) and computes the 12 rolling features, eliminating client-side training/serving skew. Buffer depth = 61 (max feature lookback: `pct_change(periods=60)` needs 60 prior readings + the current one). Rolling features reuse the exact training-time pandas math, with an explicit `FEATURE_ORDER` select to enforce column order into the ONNX model. Cold-start gate returns HTTP 425 until the buffer holds 61 readings (reject over impute — fabricated features are indistinguishable from real ones to the model). Append + trim + expire + count + read run in a single Redis pipeline (MULTI/EXEC) so concurrent requests for the same device cannot interleave and corrupt the window — the distributed analogue of the `threading.Lock` used for the model swap in TSD-005. Sliding TTL (2h, > the ~61-min buffer span) auto-reclaims dead devices; AOF persistence intentionally off (buffer is reconstructible — a restarted device re-warms in ~61 readings). Redis added as a 5th Docker Compose service. Inference latency ~9.5ms steady-state (Redis round-trip sub-millisecond). |
 | TSD-008 | ✅ Done | Data drift detection — monitors covariate shift on the 6 raw features (data drift is detectable label-free; concept drift is not, since live anomaly labels are unavailable). Serving service appends each incoming reading to a separate global Redis list (`drift:samples`, capped ~5000, no TTL — deliberately different config from the TSD-007 per-device buffer: a *population* sample for distribution estimation vs a *point* query for current features), under a best-effort `try/except` so a monitoring failure never breaks `/predict`. A standalone scheduled `drift_runner` process (6th Compose service, decoupled failure domain from serving) compares a live window against a **normal-only reference** (`label==0` rows — anomalies excluded so the baseline means "normal," not "normal+anomalies") using **Evidently 0.7.x** (`DataDriftPreset`, Wasserstein distance). Threshold (1.0) calibrated empirically against the observed noise floor (~0.18) rather than a library default — clean separation from the ~20 drift signal. Per-feature scores exposed as a labelled Prometheus gauge (`feature_drift_score`) plus a 0/1 `drift_alert` gauge for Grafana alerting; runs an own `start_http_server` (long-lived loop, since Prometheus cannot scrape a batch job that exits — Pushgateway is the alternative). On breach: **alert only**, not auto-retrain — retraining stays human-gated because auto-retraining on unlabelled drift can teach the model to accept a degraded state as normal, and the drift sample window is sized for *detection*, not *training* (real retraining sources full-volume data from a warehouse). Also implemented PSI from scratch (quantile bins, frozen reference edges, epsilon smoothing for `ln(0)`) in `src/drift.py` as the "understand it before using the tool" version. Robustness: runner tolerates an empty/cold sample store (skips cycle below `MIN_SAMPLES`). |
 | TSD-009 | ✅ Done | Kubernetes deployment + progressive delivery (blue-green & canary). Full 6-service stack ported from Docker Compose to minikube (`k8s/` manifests): namespace, Redis, MLflow (state baked into a custom image — `mlflow.db` + `mlartifacts` copied in so the champion is present, vs Compose's host bind-mount), inference (blue), drift-runner, Prometheus (config via ConfigMap, FQDN scrape targets), Grafana (Prometheus datasource auto-provisioned via ConfigMap — the GitOps fix for TSD-006's manual setup). **Blue-green:** blue + green Deployments share `app: tsd-inference`, differ in a `version` label; the Service selector pins one version, and a one-line `kubectl patch` flips all traffic blue↔green (verified live by watching Service endpoints move between pod IPs) — instant switch, instant rollback, zero downtime (K8s only adds Ready pods to endpoints, so green must be Ready before the flip). **Canary:** ingress-nginx weighted routing — two Ingresses on the same host, one marked `canary: "true"` with `canary-weight` sending an exact % to a green-backed canary Service (true weight-based split, independent of pod count, unlike the native replica-ratio approach); progression/rollback by patching the weight annotation.|
+| TSD-010 | 🚧 Planned | Offline batch scoring via PySpark — multi-device fleet simulator, distributed feature engineering with Spark window functions (skew-checked against the training pandas math), batch scoring with the same registry champion, and scheduled fleet anomaly reports. Complements — does not replace — the online serving path. |
