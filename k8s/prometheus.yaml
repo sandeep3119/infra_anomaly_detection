@@ -17,6 +17,10 @@ data:
       - job_name: 'drift_runner'
         static_configs:
           - targets: ['drift-runner.tsd.svc.cluster.local:8001']
+      - job_name: 'pushgateway'
+        honor_labels: true
+        static_configs:
+          - targets: ['pushgateway.tsd.svc.cluster.local:9091']
 ---
 apiVersion: apps/v1
 kind: Deployment

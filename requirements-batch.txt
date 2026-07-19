@@ -5,3 +5,4 @@ mlflow
 pandas<3
 pyarrow
 numpy
+prometheus_client

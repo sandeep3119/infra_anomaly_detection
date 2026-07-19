@@ -1,5 +1,6 @@
 import os
-
+from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
+import time
 from pyspark.sql import SparkSession,functions as F
 from pyspark.sql.types import StructField, StructType, LongType
 from datetime import date
@@ -19,6 +20,23 @@ FEATURE_ORDER = [
     "write_latency_rolling_mean_5m", "write_latency_rolling_std_5m", "write_latency_pct_change_1h",
 ]
 _session = None
+
+def push_metrics(summary_rows, model_version, total_scored, gateway):
+    registry = CollectorRegistry()          # fresh registry per run, not the global one
+    g_anom = Gauge("batch_anomaly_count", "count per tier/class",
+                   ["tier", "predicted_class"], registry=registry)
+    g_ver  = Gauge("batch_model_version", "champion version used", registry=registry)
+    g_rows = Gauge("batch_rows_scored", "rows scored this run", registry=registry)
+    g_ts   = Gauge("batch_last_success_timestamp", "unix ts of last success", registry=registry)
+
+    for r in summary_rows:
+        g_anom.labels(tier=r["tier"], predicted_class=str(r["predicted_class"])).set(r["count"])
+    g_ver.set(int(model_version))
+    g_rows.set(total_scored)
+    g_ts.set(time.time())
+
+    push_to_gateway(gateway, job="tsd_batch_scoring", registry=registry)
+
 
 def load_model_bytes(tracking_uri, name, alias):
     mlflow.set_tracking_uri(tracking_uri)
@@ -74,6 +92,13 @@ def main(fleet_path, out_path):
     summary = summary.withColumn("model_version", F.lit(model_version))
     summary.show()
     summary.write.mode("overwrite").parquet(f"{out_path}/summary/")
+
+    push_metrics(
+    summary.collect(),
+    model_version,
+    scored.count(),
+    os.getenv("PUSHGATEWAY", "pushgateway:9091"),
+)
     spark.stop()
 
 if __name__ == "__main__":
