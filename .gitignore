@@ -13,4 +13,4 @@ __pycache__/
 mlartifacts/
 mlflow.db
 mlflow.log
-reports/
+reports/mc.exe

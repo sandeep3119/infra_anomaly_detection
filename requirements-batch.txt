@@ -1,0 +1,7 @@
+# pyspark pinned so its bundled Hadoop matches hadoop-aws:3.5.0
+pyspark==4.2.0
+onnxruntime
+mlflow
+pandas<3
+pyarrow
+numpy

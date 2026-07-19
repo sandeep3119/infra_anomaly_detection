@@ -158,20 +158,26 @@ TSD/
 │   ├── prometheus.yml         # Scrape config (inference + drift_runner)
 │   └── grafana/dashboards/    # Version-controlled dashboard JSON
 ├── src/
-│   ├── simulate.py            # Reusable simulation module
+│   ├── simulate.py            # Single-device telemetry simulation
+│   ├── simulate_fleet.py      # Multi-device fleet simulator → partitioned parquet (TSD-010)
 │   ├── train.py              # Training + evaluation functions
 │   ├── drift.py              # PSI (from-scratch) + Evidently drift computation (TSD-008)
-│   └── drift_runner.py       # Scheduled drift detector — Prometheus gauges + alert
+│   ├── drift_runner.py       # Scheduled drift detector — Prometheus gauges + alert
+│   ├── batch_feature.py      # Spark window-function features + pandas equivalence check (TSD-010)
+│   └── batch_scoring.py      # Spark batch scoring — MLflow champion, ONNX, s3a reports (TSD-010)
 ├── scripts/
 │   └── simulate_traffic.py    # Telemetry traffic generator (normal / --drift)
-├── k8s/                       # Kubernetes manifests (TSD-009)
+├── k8s/                       # Kubernetes manifests (TSD-009, TSD-010)
 │   ├── namespace.yaml
 │   ├── redis.yaml
 │   ├── mlflow.Dockerfile / mlflow.yaml   # MLflow with state baked into image
 │   ├── inference.yaml / inference-green.yaml  # blue + green deployments
 │   ├── drift-runner.yaml
 │   ├── prometheus.yaml / grafana.yaml
-│   └── ingress.yaml           # blue-green selector flip + canary weighted routing
+│   ├── ingress.yaml           # blue-green selector flip + canary weighted routing
+│   ├── minio.yaml             # S3 object store (data lake)
+│   └── batch-job.yaml / batch-cronjob.yaml   # offline batch scoring, one-shot + scheduled
+├── serving/Dockerfile.batch   # PySpark batch scoring image
 ├── docker-compose.yml         # mlflow + inference + prometheus + grafana + redis + drift_runner
 └── requirements.txt
 ```
@@ -183,6 +189,7 @@ TSD/
 - **Experiment tracking:** MLflow (registry, champion alias, hot-reload)
 - **Serving:** FastAPI, ONNX Runtime, uvicorn
 - **Feature store:** Redis (per-device rolling buffer)
+- **Batch:** PySpark, MinIO (S3)
 - **Monitoring:** Prometheus, Grafana
 - **Drift detection:** Evidently
 - **Infra:** Docker, Kubernetes (minikube), ingress-nginx
@@ -276,4 +283,4 @@ a 0/1 drift-alert status, and the max drift score across features.
 | TSD-007 | ✅ Done | Redis per-device rolling buffer (promoted from TSD-004b) — feature computation moved server-side. Client now sends `deviceID` + 6 raw features only; server maintains a per-device history list in Redis (`device:{id}` key) and computes the 12 rolling features, eliminating client-side training/serving skew. Buffer depth = 61 (max feature lookback: `pct_change(periods=60)` needs 60 prior readings + the current one). Rolling features reuse the exact training-time pandas math, with an explicit `FEATURE_ORDER` select to enforce column order into the ONNX model. Cold-start gate returns HTTP 425 until the buffer holds 61 readings (reject over impute — fabricated features are indistinguishable from real ones to the model). Append + trim + expire + count + read run in a single Redis pipeline (MULTI/EXEC) so concurrent requests for the same device cannot interleave and corrupt the window — the distributed analogue of the `threading.Lock` used for the model swap in TSD-005. Sliding TTL (2h, > the ~61-min buffer span) auto-reclaims dead devices; AOF persistence intentionally off (buffer is reconstructible — a restarted device re-warms in ~61 readings). Redis added as a 5th Docker Compose service. Inference latency ~9.5ms steady-state (Redis round-trip sub-millisecond). |
 | TSD-008 | ✅ Done | Data drift detection — monitors covariate shift on the 6 raw features (data drift is detectable label-free; concept drift is not, since live anomaly labels are unavailable). Serving service appends each incoming reading to a separate global Redis list (`drift:samples`, capped ~5000, no TTL — deliberately different config from the TSD-007 per-device buffer: a *population* sample for distribution estimation vs a *point* query for current features), under a best-effort `try/except` so a monitoring failure never breaks `/predict`. A standalone scheduled `drift_runner` process (6th Compose service, decoupled failure domain from serving) compares a live window against a **normal-only reference** (`label==0` rows — anomalies excluded so the baseline means "normal," not "normal+anomalies") using **Evidently 0.7.x** (`DataDriftPreset`, Wasserstein distance). Threshold (1.0) calibrated empirically against the observed noise floor (~0.18) rather than a library default — clean separation from the ~20 drift signal. Per-feature scores exposed as a labelled Prometheus gauge (`feature_drift_score`) plus a 0/1 `drift_alert` gauge for Grafana alerting; runs an own `start_http_server` (long-lived loop, since Prometheus cannot scrape a batch job that exits — Pushgateway is the alternative). On breach: **alert only**, not auto-retrain — retraining stays human-gated because auto-retraining on unlabelled drift can teach the model to accept a degraded state as normal, and the drift sample window is sized for *detection*, not *training* (real retraining sources full-volume data from a warehouse). Also implemented PSI from scratch (quantile bins, frozen reference edges, epsilon smoothing for `ln(0)`) in `src/drift.py` as the "understand it before using the tool" version. Robustness: runner tolerates an empty/cold sample store (skips cycle below `MIN_SAMPLES`). |
 | TSD-009 | ✅ Done | Kubernetes deployment + progressive delivery (blue-green & canary). Full 6-service stack ported from Docker Compose to minikube (`k8s/` manifests): namespace, Redis, MLflow (state baked into a custom image — `mlflow.db` + `mlartifacts` copied in so the champion is present, vs Compose's host bind-mount), inference (blue), drift-runner, Prometheus (config via ConfigMap, FQDN scrape targets), Grafana (Prometheus datasource auto-provisioned via ConfigMap — the GitOps fix for TSD-006's manual setup). **Blue-green:** blue + green Deployments share `app: tsd-inference`, differ in a `version` label; the Service selector pins one version, and a one-line `kubectl patch` flips all traffic blue↔green (verified live by watching Service endpoints move between pod IPs) — instant switch, instant rollback, zero downtime (K8s only adds Ready pods to endpoints, so green must be Ready before the flip). **Canary:** ingress-nginx weighted routing — two Ingresses on the same host, one marked `canary: "true"` with `canary-weight` sending an exact % to a green-backed canary Service (true weight-based split, independent of pod count, unlike the native replica-ratio approach); progression/rollback by patching the weight annotation.|
-| TSD-010 | 🚧 Planned | Offline batch scoring via PySpark — multi-device fleet simulator, distributed feature engineering with Spark window functions (skew-checked against the training pandas math), batch scoring with the same registry champion, and scheduled fleet anomaly reports. Complements — does not replace — the online serving path. |
+| TSD-010 | ✅ Done | Offline batch scoring on Spark, complementing (not replacing) the online path. Multi-device fleet simulator writes partitioned parquet to MinIO (S3). Spark computes the 12 rolling features with window functions, validated numerically against the pandas training features (equivalence check, 1e-6 tolerance). Scores with the champion resolved from MLflow by alias — model bytes broadcast to executors, ONNX session built per-executor — and writes date-partitioned reports back to MinIO. Runs as a Kubernetes CronJob. |
