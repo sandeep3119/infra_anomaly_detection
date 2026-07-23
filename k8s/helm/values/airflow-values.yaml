@@ -1,0 +1,43 @@
+# Celery/observability-related disabled to keep the footprint small.
+executor: LocalExecutor
+
+
+redis:
+  enabled: false
+flower:
+  enabled: false
+workers:
+  replicas: 0
+
+# Trim non-essential components for a demo cluster.
+statsd:
+  enabled: false
+triggerer:
+  enabled: false          # no deferrable operators in our DAGs
+dagProcessor:
+  enabled: false          # scheduler parses DAGs directly at this scale
+
+# Bundled Postgres for the metadata DB
+postgresql:
+  enabled: true
+
+
+scheduler:
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { memory: 1Gi }
+webserver:
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { memory: 1Gi }
+  service:
+    type: ClusterIP        # reach via kubectl port-forward
+
+# DAGs pulled from the repo's dags/ folder via git-sync
+dags:
+  gitSync:
+    enabled: true
+    repo: https://github.com/sandeep3119/infra_anomaly_detection.git
+    branch: master
+    subPath: dags
+    wait: 60
