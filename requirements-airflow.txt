@@ -1,0 +1,8 @@
+mlflow
+xgboost
+scikit-learn
+pandas
+numpy
+s3fs
+onnx
+onnxmltools

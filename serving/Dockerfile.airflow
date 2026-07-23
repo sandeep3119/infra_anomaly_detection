@@ -1,0 +1,13 @@
+# Custom Airflow image for TSD-011 — base Airflow + ML deps + project src, so DAG A's
+# light tasks (train/evaluate/register/refresh-baseline) can run in the scheduler pod.
+# Base MUST match the chart's Airflow version (3.2.2) exactly.
+# Build into minikube:  docker build -f serving/Dockerfile.airflow -t tsd-airflow:latest .
+FROM apache/airflow:3.2.2
+
+# Airflow's base image runs as the `airflow` user; 
+COPY --chown=airflow:airflow requirements-airflow.txt /tmp/requirements-airflow.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-airflow.txt
+
+# Project code the tasks import, PYTHONPATH makes `import src.*` work.
+COPY --chown=airflow:airflow src /opt/airflow/project/src
+ENV PYTHONPATH=/opt/airflow/project

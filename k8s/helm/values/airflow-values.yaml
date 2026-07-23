@@ -1,6 +1,13 @@
 # Celery/observability-related disabled to keep the footprint small.
 executor: LocalExecutor
 
+# Custom image: base Airflow 3.2.2 + ML deps + project src (for DAG A tasks).
+images:
+  airflow:
+    repository: tsd-airflow
+    tag: latest
+    pullPolicy: IfNotPresent
+
 
 redis:
   enabled: false
@@ -15,7 +22,7 @@ statsd:
 triggerer:
   enabled: false          # no deferrable operators in our DAGs
 dagProcessor:
-  enabled: false          # scheduler parses DAGs directly at this scale
+  enabled: true           # REQUIRED in Airflow 3.x — it parses DAGs (scheduler no longer does)
 
 # Bundled Postgres for the metadata DB
 postgresql:

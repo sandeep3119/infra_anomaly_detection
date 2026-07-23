@@ -21,7 +21,7 @@ def generate_device(device_id, tier, n_rows, seed):
 
 def build_fleet(n_devices, n_rows, out_path):
     """
-    Generate synthetic data for a fleet of devices.
+    Generate synthetic data for a fleet of devices simulating data lake behavior.
     """
     all_dfs = []
     for device_id in range(n_devices):
@@ -33,6 +33,16 @@ def build_fleet(n_devices, n_rows, out_path):
     # Shuffle the rows to mimic real-world data distribution similar to underorderd data lake
     fleet_df = fleet_df.sample(frac=1, random_state=32).reset_index(drop=True)
     fleet_df.to_parquet(out_path, partition_cols=['device_id'], coerce_timestamps='us', allow_truncated_timestamps=True)
+
+
+def build_fleet_pandas(n_devices, n_rows,seed_offset=42):
+    """
+    Generate synthetic data for a fleet of devices using pandas for retraining.
+    """
+    frames = [generate_device(f"node_{i:02d}", "production" , n_rows, seed=seed_offset+i) for i in range(n_devices)]
+    fleet_df = pd.concat(frames, ignore_index=True)
+    return fleet_df
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate synthetic data for a fleet of devices.")
