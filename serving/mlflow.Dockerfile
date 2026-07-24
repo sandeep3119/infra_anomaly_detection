@@ -6,7 +6,7 @@
 # Build from the project root:  docker build -f k8s/mlflow.Dockerfile -t tsd-mlflow:latest .
 FROM python:3.10-slim
 WORKDIR /mlflow
-RUN pip install --no-cache-dir mlflow flask
+RUN pip install --no-cache-dir mlflow flask boto3
 COPY mlflow.db ./mlflow.db
 COPY mlartifacts ./mlartifacts
 EXPOSE 5000
@@ -14,4 +14,4 @@ CMD ["mlflow", "server", \
      "--host", "0.0.0.0", \
      "--port", "5000", \
      "--backend-store-uri", "sqlite:///mlflow.db", \
-     "--default-artifact-root", "/mlflow/mlartifacts"]
+     "--default-artifact-root", "s3://mlflow/"]

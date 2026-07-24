@@ -1,6 +1,15 @@
 # Celery/observability-related disabled to keep the footprint small.
 executor: LocalExecutor
 
+# S3 (MinIO) config so the retraining client can upload MLflow artifacts.
+env:
+  - name: MLFLOW_S3_ENDPOINT_URL
+    value: "http://minio:9000"
+  - name: AWS_ACCESS_KEY_ID
+    value: "minioadmin"
+  - name: AWS_SECRET_ACCESS_KEY
+    value: "minioadmin"
+
 # Custom image: base Airflow 3.2.2 + ML deps + project src (for DAG A tasks).
 images:
   airflow:
